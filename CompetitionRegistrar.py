@@ -128,7 +128,7 @@ class CompetitionRegistrar:
     # --- lifecycle ------------------------------------------------------
 
     def create(self, year: int, slug: str, schemas: dict[str, str] | None = None) -> Competition:
-        """Make both folders and an empty WAL-mode db, saving any schemas as files beside it.
+        """Make both folders and an empty db, saving any schemas as files beside it.
 
         Schemas are stored, not executed — see apply_schemas.
         """
@@ -141,7 +141,11 @@ class CompetitionRegistrar:
 
         conn = sqlite3.connect(comp.db_path)
         try:
-            conn.execute("PRAGMA journal_mode=WAL")
+            # DELETE keeps the competition in a single self-contained .db file: a copy
+            # or backup can never lose rows left behind in a sidecar. WAL would buy
+            # commits that don't wait on open readers, which this workload never has -
+            # submissions serialize on the write lock either way.
+            conn.execute("PRAGMA journal_mode=DELETE")
         finally:
             conn.close()
 
