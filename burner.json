@@ -1,0 +1,26 @@
+[
+  {
+    "alliance_color": "r",
+    "attacking_time": 0,
+    "auto_accuracy": 1,
+    "auto_climb": 0,
+    "auto_feeding": 0,
+    "auto_qata": "Start position: Mid, Shot well, accuracy high",
+    "auto_scoring": 7,
+    "cross_bump": false,
+    "cross_trench": true,
+    "defended_time": 0,
+    "defense_qata": "",
+    "match_number": 11,
+    "oof_time": 0,
+    "qata": "Drive Train Speed: Fast, Driver skill: Good, Shooting Location 3ft from hub, accuracy high, could pick up balls well broke towards the end",
+    "scout_id": "Dhruv",
+    "scout_team": 3128,
+    "team_number": 8020,
+    "team_position": 1,
+    "tele_accuracy": 0.9,
+    "tele_climb": 0,
+    "tele_feeding": 0,
+    "tele_scoring": 19
+  }
+]
