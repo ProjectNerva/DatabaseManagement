@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
 from CompetitionRegistrar import CompetitionNotFound, CompetitionRegistrar
@@ -27,6 +28,19 @@ from Utils.JSONConverter import (
 #: How long a submission waits for another writer's lock before giving up.
 BUSY_TIMEOUT_SECONDS = 30.0
 
+#: Ledger of already-applied submission ids. Not scouting data: it is hidden from
+#: table discovery so it can never be offered to choose_table as a record shape.
+LEDGER_TABLE = "_submissions"
+
+_CREATE_LEDGER = f"""
+CREATE TABLE IF NOT EXISTS "{LEDGER_TABLE}" (
+    submission_id TEXT PRIMARY KEY,
+    table_name    TEXT NOT NULL,
+    row_id        INTEGER NOT NULL,
+    received_at   TEXT NOT NULL
+)
+"""
+
 
 @dataclass(frozen=True)
 class Submission:
@@ -36,11 +50,20 @@ class Submission:
     created: bool
     row_id: int
     reasons: list[str] = field(default_factory=list)
+    duplicate: bool = False
 
     def __str__(self) -> str:
+        if self.duplicate:
+            return f"already stored in {self.table_name}, row {self.row_id}"
         verb = "created" if self.created else "matched"
         why = f" ({'; '.join(self.reasons)})" if self.reasons else ""
         return f"{verb} {self.table_name}, row {self.row_id}{why}"
+
+
+def _now() -> str:
+    """UTC timestamp for the ledger. The Pi's clock is often wrong; UTC at least makes
+    two rows comparable to each other."""
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def _storable(value):
@@ -62,13 +85,38 @@ class DatabaseManager:
     def __init__(self, registrar: CompetitionRegistrar) -> None:
         self.registrar = registrar
 
-    def submit(self, year: int, slug: str, base_name: str, json_path: Path | str) -> Submission:
-        """Load one JSON record into the right version table, creating it if needed."""
+    def submit(
+        self,
+        year: int,
+        slug: str,
+        base_name: str,
+        json_path: Path | str,
+        submission_id: str | None = None,
+    ) -> Submission:
+        """Load one JSON record from a file and store it. See submit_record."""
+        return self.submit_record(
+            year, slug, base_name, load_record(json_path), submission_id=submission_id
+        )
+
+    def submit_record(
+        self,
+        year: int,
+        slug: str,
+        base_name: str,
+        record: dict,
+        submission_id: str | None = None,
+    ) -> Submission:
+        """Store one already-parsed record in the right version table, creating it if needed.
+
+        Pass submission_id to make the write idempotent: a second call with an id
+        already applied stores nothing and reports where the first one landed. The
+        id is recorded in the same transaction as the record, so a crash can never
+        leave a stored row that a retry would duplicate.
+        """
         comp = self.registrar.resolve(year, slug)
         if not comp.db_path.exists():
             raise CompetitionNotFound(f"{comp.year}/{comp.slug} does not exist")
 
-        record = load_record(json_path)
         columns = infer_columns(record)
         comp.schemas_dir.mkdir(parents=True, exist_ok=True)
 
@@ -78,6 +126,19 @@ class DatabaseManager:
             # concurrent submissions queue up here instead of racing: each one sees
             # the tables every earlier submission committed.
             conn.execute("BEGIN IMMEDIATE")
+
+            if submission_id is not None:
+                conn.execute(_CREATE_LEDGER)
+                # Safe to read before writing: we already hold the write lock, so no
+                # other submission can insert this id between the check and the insert.
+                prior = conn.execute(
+                    f'SELECT table_name, row_id FROM "{LEDGER_TABLE}" WHERE submission_id = ?',
+                    (submission_id,),
+                ).fetchone()
+                if prior is not None:
+                    conn.execute("ROLLBACK")
+                    return Submission(prior[0], False, prior[1], duplicate=True)
+
             existing = self._table_columns(conn)
             result = choose_table(columns, existing, base_name)
 
@@ -93,6 +154,15 @@ class DatabaseManager:
                 [_storable(record[name]) for name in names],
             )
             row_id = cursor.lastrowid
+
+            if submission_id is not None:
+                # Same transaction as the record above: either both land or neither
+                # does, so a crash here cannot produce a row a retry would duplicate.
+                conn.execute(
+                    f'INSERT INTO "{LEDGER_TABLE}" '
+                    "(submission_id, table_name, row_id, received_at) VALUES (?, ?, ?, ?)",
+                    (submission_id, result.table_name, row_id, _now()),
+                )
 
             # Written under the same lock, so the file can't be reordered by a
             # slower writer. It is derived from the database, never the reverse.
@@ -119,12 +189,17 @@ class DatabaseManager:
 
         This is the authority on what exists - not the stored .sql file, which is a
         derived artifact and may be missing or stale.
+
+        The submission ledger is excluded: it is bookkeeping, and offering it to
+        choose_table would let it be matched as a record shape.
         """
         tables = {}
         names = [
             row[0]
             for row in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name NOT LIKE 'sqlite_%' AND name != ?",
+                (LEDGER_TABLE,),
             )
         ]
         for name in names:
@@ -157,7 +232,9 @@ class DatabaseManager:
             names = [
                 row[0]
                 for row in conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+                    "SELECT name FROM sqlite_master WHERE type='table' "
+                    "AND name != ? ORDER BY name",
+                    (LEDGER_TABLE,),
                 )
             ]
             return {

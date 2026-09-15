@@ -1,2 +1,11 @@
 Database
 __pycache__
+.venv
+
+# per-machine, holds the event token
+uploader.json
+
+# the scouting queue on a scout laptop
+outbox/
+sent/
+rejected/

@@ -1,0 +1,3 @@
+# Scouting laptops only. The uploader imports nothing from the database code,
+# so this is the whole of its dependency set.
+httpx>=0.27

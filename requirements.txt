@@ -1,1 +1,4 @@
+# Development and testing: everything, both sides.
+-r requirements-server.txt
+-r requirements-uploader.txt
 pytest>=8.0
